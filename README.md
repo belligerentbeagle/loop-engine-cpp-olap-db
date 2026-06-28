@@ -6,6 +6,31 @@ Strata ingests millions of advertising events (impressions, clicks, conversions)
 
 ---
 
+## Status — all four phases implemented ✅
+
+| | |
+|---|---|
+| **Phase 1** mmap'd columnar storage + TSV parser | 10 M rows ingested, 22 columns, ~2 M rows/s (warm), dictionary-encoded categoricals |
+| **Phase 2** vectorized filter / aggregate / GROUP BY | **~59 GB/s** single-column scan; auto-vectorized NEON hot loops |
+| **Phase 3** `std::jthread` pool + streaming `MemTable` | parallel aggregation; lock-free SPSC queue; query-while-ingest |
+| **Phase 4** `pybind11` + Arrow + Streamlit dashboard | `import strata`; zero-copy numpy/Arrow; interactive Plotly UI |
+
+Every aggregate is validated exactly against pandas. Headline result: **columnar is 7.3× faster than a row-major baseline** on the same query, and scans run at the machine's memory-bandwidth limit. Full measured numbers, hardware, and the SIMD disassembly: **[BENCHMARKS.md](BENCHMARKS.md)**.
+
+**Quickstart:**
+```bash
+./build.sh                                                   # cmake + build everything
+python tools/gen_synthetic.py --rows 10_000_000 \
+       --out data/criteo_attribution.tsv                     # or drop the real Criteo TSV here
+(cd build && ctest --output-on-failure)                      # 40 correctness checks
+./build/strata query data/criteo_attribution.tsv \
+       --threads 8 --where click eq 1 --group campaign --sum cost
+python python/demo.py --data data/criteo_attribution.tsv --check
+streamlit run python/dashboard.py -- --data data/criteo_attribution.tsv
+```
+
+---
+
 ## Why this exists
 
 Most "database" side projects are CRUD apps over SQLite, and they teach you almost nothing about how a database actually spends its CPU cycles. Strata exists to make a few systems ideas concrete and measurable:
@@ -59,15 +84,15 @@ The deliverable is not a toy. By the end you have an artifact that demonstrates 
 The project is built in four phases. Each phase is independently demoable and benchmarkable — resist the urge to build everything before measuring anything.
 
 ### Phase 1 — Columnar storage engine *(beginner → intermediate)*
-- [ ] Parse a large CSV/TSV event log.
-- [ ] Pivot rows into per-column contiguous arrays (`std::vector<int64_t>` for timestamps, dictionary-encoded ids for low-cardinality categoricals, `std::vector<std::string>` or an offset+blob layout for the rest).
-- [ ] Memory-map the source file (`mmap` on Linux) so reads page in lazily without buffering the whole file in user space.
+- [x] Parse a large CSV/TSV event log.
+- [x] Pivot rows into per-column contiguous arrays (`std::vector<int64_t>` for timestamps, dictionary-encoded ids for low-cardinality categoricals, `std::vector<std::string>` or an offset+blob layout for the rest).
+- [x] Memory-map the source file (`mmap` on Linux) so reads page in lazily without buffering the whole file in user space.
 - **Milestone:** load the dataset and report rows ingested, ingest throughput (rows/s, MB/s), and resident memory.
 
 ### Phase 2 — Vectorized query execution *(intermediate)*
-- [ ] A column-at-a-time evaluator: filters and aggregations operate on raw arrays, never on per-row objects.
-- [ ] Implement `COUNT`, `SUM`, `AVG`, and a `GROUP BY` over a dictionary-encoded column.
-- [ ] Compile with `-O3 -march=native`, inspect the emitted assembly (`-S` or [godbolt](https://godbolt.org/)), and confirm the hot loop auto-vectorized.
+- [x] A column-at-a-time evaluator: filters and aggregations operate on raw arrays, never on per-row objects.
+- [x] Implement `COUNT`, `SUM`, `AVG`, and a `GROUP BY` over a dictionary-encoded column.
+- [x] Compile with `-O3 -march=native`, inspect the emitted assembly (`-S` or [godbolt](https://godbolt.org/)), and confirm the hot loop auto-vectorized.
 - **Milestone:** scan throughput in GB/s, and a side-by-side of `-O2` vs `-O3 -march=native` on the same query.
 
 ```cpp
@@ -81,15 +106,15 @@ std::size_t count_events(const std::vector<std::int32_t>& event_col,
 ```
 
 ### Phase 3 — Multithreaded execution & buffering *(advanced)*
-- [ ] Split column scans into chunks; a `std::jthread` pool aggregates partials, then merge. Target near-linear scaling to physical core count.
-- [ ] A row-oriented `MemTable` buffers incoming events; on hitting a threshold (e.g. 10k rows) a background thread flushes and pivots them into the columnar store — so queries can run during ingest.
-- [ ] Use a lock-free (or at least lock-minimal) queue between producer and flush thread; `std::stop_token` for clean shutdown.
+- [x] Split column scans into chunks; a `std::jthread` pool aggregates partials, then merge. Target near-linear scaling to physical core count.
+- [x] A row-oriented `MemTable` buffers incoming events; on hitting a threshold (e.g. 10k rows) a background thread flushes and pivots them into the columnar store — so queries can run during ingest.
+- [x] Use a lock-free (or at least lock-minimal) queue between producer and flush thread; `std::stop_token` for clean shutdown.
 - **Milestone:** thread-scaling chart (1→N cores) and a demo querying while streaming.
 
 ### Phase 4 — Expose to the frontend
-- [ ] `pybind11` builds the engine into a native module (`import strata`).
-- [ ] Return results as Apache Arrow arrays so Python reads them zero-copy.
-- [ ] A small Streamlit/Plotly dashboard: pick a metric, group by a dimension, see it render instantly.
+- [x] `pybind11` builds the engine into a native module (`import strata`).
+- [x] Return results as Apache Arrow arrays so Python reads them zero-copy.
+- [x] A small Streamlit/Plotly dashboard: pick a metric, group by a dimension, see it render instantly.
 - **Milestone:** end-to-end — Python query → C++ scan → Arrow → chart, with the round-trip timed.
 
 ---
@@ -112,30 +137,43 @@ std::size_t count_events(const std::vector<std::int32_t>& event_col,
 
 ```
 strata/
-├── CMakeLists.txt
+├── CMakeLists.txt          # core lib + CLI + tests + bench(O3/O2/O0) + pybind11 module
+├── build.sh                # one-shot configure + build
 ├── README.md
+├── BENCHMARKS.md           # measured numbers, hardware, SIMD disassembly
 ├── include/strata/
-│   ├── column.hpp          # column types, dictionary encoding
+│   ├── dictionary.hpp      # dictionary encoding (transparent string hashing)
+│   ├── column.hpp          # typed columns (Int64 / Float64 / Dict)
+│   ├── schema.hpp          # column name→type map + criteo_schema()
 │   ├── table.hpp           # columnar store
-│   ├── memtable.hpp        # row buffer + flush
 │   ├── parser.hpp          # mmap + CSV/TSV parsing
-│   └── executor.hpp        # vectorized filter/aggregate
+│   ├── executor.hpp        # vectorized filter / aggregate / GROUP BY
+│   ├── threadpool.hpp      # jthread pool, map_reduce, for_ranges
+│   └── memtable.hpp        # lock-free SPSC ring + streaming row buffer
 ├── src/
-│   ├── parser.cpp
-│   ├── table.cpp
-│   ├── executor.cpp
-│   └── threadpool.cpp
+│   ├── parser.cpp  table.cpp  executor.cpp  threadpool.cpp  memtable.cpp
+├── apps/
+│   └── strata_cli.cpp      # describe / head / query / stream
 ├── bindings/
-│   └── strata_py.cpp       # pybind11 module
+│   └── strata_py.cpp       # pybind11 module (import strata)
 ├── bench/
-│   └── bench_scan.cpp      # Google Benchmark
+│   └── bench_scan.cpp      # scan throughput, thread scaling, row-vs-columnar
 ├── tests/
-│   └── test_executor.cpp
+│   └── test_strata.cpp     # self-contained correctness suite (no external framework)
+├── tools/
+│   ├── gen_synthetic.py    # synthetic Criteo-schema generator (deterministic)
+│   └── fetch_criteo.sh     # best-effort real-dataset download
 ├── python/
-│   └── dashboard.py        # Streamlit demo
+│   ├── dashboard.py        # Streamlit + Plotly demo
+│   └── demo.py             # headless end-to-end demo (+ pandas cross-check)
 └── data/
-    └── README.md           # where to drop the dataset (see below)
+    └── README.md           # where to drop / how to generate the dataset
 ```
+
+> **Dependency choices (deliberate):** the engine has **zero hard third-party dependencies** —
+> tests and benchmarks are self-contained (no GoogleTest/Google Benchmark), and results cross to
+> Python as numpy arrays wrapped zero-copy into `pyarrow` rather than linking the Arrow C++ SDK.
+> This keeps the build a single `cmake` away on any machine with a C++20 compiler.
 
 ---
 
@@ -180,12 +218,24 @@ target_link_libraries(strata PRIVATE strata_core)
 #include "strata/table.hpp"
 #include "strata/executor.hpp"
 
-auto table = strata::Table::from_csv("data/criteo_attribution.tsv", '\t');
-// COUNT(*) WHERE click = 1 GROUP BY campaign
+// mmap + parse with the built-in Criteo schema (header-driven; column order doesn't matter)
+auto table = strata::Table::from_criteo("data/criteo_attribution.tsv");
+
+// SUM(cost) WHERE click == 1 GROUP BY campaign, across 8 threads
 auto result = strata::Executor(table)
-                  .filter("click", 1)
+                  .threads(8)
+                  .filter_eq("click", 1)
                   .group_by("campaign")
-                  .agg(strata::Agg::Count);
+                  .agg(strata::Agg::Sum, "cost");
+result.sort_by_value_desc();
+std::puts(result.to_string(/*top*/ 10).c_str());
+```
+
+Or from the CLI (no Python needed):
+```bash
+./build/strata query data/criteo_attribution.tsv --threads 8 \
+    --where click eq 1 --group campaign --sum cost --limit 10
+./build/strata stream data/criteo_attribution.tsv   # query while streaming ingest
 ```
 
 **From Python:**
@@ -193,15 +243,20 @@ auto result = strata::Executor(table)
 ```python
 import strata
 
-t = strata.load("data/criteo_attribution.tsv", sep="\t")
+t = strata.load("data/criteo_attribution.tsv", sep="\t")   # default schema = Criteo
 
-# returns an Arrow table, zero-copy from the C++ side
+# returns an Arrow table; numeric columns cross the boundary zero-copy
 df = (t.filter(click=1)
        .group_by("campaign")
        .count()
        .to_arrow())
 
 print(df.to_pandas().sort_values("count", ascending=False).head())
+
+# scalars, other aggregates, threads, time-bucketing:
+ctr = t.filter(click=1).count().values[0] / t.count().values[0]
+spend = t.threads(8).filter(click=1).group_by("campaign").sum("cost")
+by_day = t.group_by("timestamp", 86400).count()        # one bucket per day
 ```
 
 ---

@@ -67,3 +67,15 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# datasets (large; generate or download locally — see data/README.md)
+data/*.tsv
+data/*.csv
+data/*.tsv.gz
+data/*.zip
+*.ipynb_checkpoints
+
+# python
+__pycache__/
+*.pyc
+.venv/
