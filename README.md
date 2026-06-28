@@ -148,10 +148,11 @@ strata/
 │   ├── table.hpp           # columnar store
 │   ├── parser.hpp          # mmap + CSV/TSV parsing
 │   ├── executor.hpp        # vectorized filter / aggregate / GROUP BY
+│   ├── sql.hpp             # SQL-string frontend (parsed to the executor)
 │   ├── threadpool.hpp      # jthread pool, map_reduce, for_ranges
 │   └── memtable.hpp        # lock-free SPSC ring + streaming row buffer
 ├── src/
-│   ├── parser.cpp  table.cpp  executor.cpp  threadpool.cpp  memtable.cpp
+│   ├── parser.cpp  table.cpp  executor.cpp  threadpool.cpp  memtable.cpp  sql.cpp
 ├── apps/
 │   └── strata_cli.cpp      # describe / head / query / stream
 ├── bindings/
@@ -259,6 +260,28 @@ spend = t.threads(8).filter(click=1).group_by("campaign").sum("cost")
 by_day = t.group_by("timestamp", 86400).count()        # one bucket per day
 ```
 
+**Or just type SQL** (a small `SELECT … WHERE … GROUP BY … ORDER BY … LIMIT` subset, parsed to the executor):
+
+```python
+df = t.sql("""SELECT campaign, SUM(cost)
+              FROM events WHERE click = 1
+              GROUP BY campaign ORDER BY 2 DESC LIMIT 10""", threads=8).to_pandas()
+```
+
+```bash
+# one-shot
+./build/strata sql data/criteo_attribution.tsv --threads 8 \
+    "SELECT campaign, SUM(cost) FROM events WHERE click=1 GROUP BY campaign ORDER BY 2 DESC LIMIT 10"
+
+# interactive REPL (no query argument)
+./build/strata sql data/criteo_attribution.tsv
+sql> SELECT cat1, AVG(cpo) FROM events WHERE conversion=1 GROUP BY cat1 ORDER BY 2 DESC LIMIT 5
+```
+
+Supported: `COUNT(*)`/`SUM`/`AVG`/`MIN`/`MAX`, `WHERE` with `= != < <= > >=` joined by `AND`,
+`GROUP BY` one column, `ORDER BY` the measure, `LIMIT`. Not (yet): joins, `OR`, `HAVING`,
+projections without an aggregate — each rejected with a clear message.
+
 ---
 
 ## Benchmarking methodology
@@ -289,7 +312,7 @@ State your hardware (CPU model, core count, RAM, that it's the ThinkPad X1 Carbo
 
 - Late-materialization (carry row selections as index vectors, materialize columns only at the end).
 - Run-length / bit-packed encoding for sortable columns.
-- A tiny SQL-ish parser so queries are strings, not builder calls.
+- ✅ **A tiny SQL-ish parser so queries are strings, not builder calls.** *(done — `strata sql`, `t.sql()`; see [Usage](#usage))*
 - Predicate pushdown into the parse step (skip rows during ingest).
 - Explicit SIMD with `std::experimental::simd` or intrinsics, compared against the auto-vectorized baseline.
 

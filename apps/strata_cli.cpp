@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <iostream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -17,6 +18,7 @@
 #include "strata/executor.hpp"
 #include "strata/memtable.hpp"
 #include "strata/parser.hpp"
+#include "strata/sql.hpp"
 
 using namespace strata;
 
@@ -27,8 +29,61 @@ static void usage() {
         "  strata head     FILE [N]\n"
         "  strata query    FILE [--threads N] [--where COL OP VAL]... [--group COL [--bucket W]]\n"
         "                       [--count | --sum COL | --avg COL | --min COL | --max COL] [--limit N]\n"
+        "  strata sql      FILE [--threads N] [\"SELECT ... \"]   (no query = interactive REPL)\n"
         "  strata stream   FILE [--threshold N] [--limit N]\n"
-        "\n  OP is one of: == != < <= > >=    (use 'eq ne lt le gt ge' to avoid shell quoting)\n");
+        "\n  OP is one of: == != < <= > >=    (use 'eq ne lt le gt ge' to avoid shell quoting)\n"
+        "\n  SQL example:\n"
+        "    strata sql FILE \"SELECT campaign, SUM(cost) FROM t WHERE click=1 GROUP BY campaign \\\n"
+        "                     ORDER BY 2 DESC LIMIT 10\"\n");
+}
+
+// Parse a single SQL statement and print the result (shared by one-shot and REPL).
+static void run_one_sql(const Table& t, const std::string& sql, unsigned threads) {
+    try {
+        const auto t0 = std::chrono::steady_clock::now();
+        QueryResult r = run_sql(t, sql, threads);
+        const double ms = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() * 1e3;
+        std::fputs(r.to_string(r.grouped ? 1000 : 1).c_str(), stdout);
+        std::printf("(%.2f ms wall)\n", ms);
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "%s\n", e.what());
+    }
+}
+
+static int cmd_sql(int argc, char** argv) {
+    const char* path = argv[2];
+    unsigned threads = 1;
+    std::string oneshot;
+    for (int i = 3; i < argc; ++i) {
+        std::string a = argv[i];
+        if (a == "--threads" && i + 1 < argc) threads = (unsigned)std::atoi(argv[++i]);
+        else oneshot = a;  // the SQL string (quote it in the shell)
+    }
+    LoadOptions opt; opt.verbose = true;
+    Table t = Table::from_csv(path, criteo_schema(), opt);
+
+    if (!oneshot.empty()) { run_one_sql(t, oneshot, threads); return 0; }
+
+    // Interactive REPL: type SQL, end with ';' or newline. Ctrl-D / "quit" to exit.
+    std::printf("strata SQL — %zu rows, %zu cols. Type a query (or 'quit'). Example:\n"
+                "  SELECT campaign, SUM(cost) FROM t WHERE click=1 GROUP BY campaign ORDER BY 2 DESC LIMIT 10\n",
+                t.num_rows(), t.num_cols());
+    std::string line;
+    std::printf("sql> "); std::fflush(stdout);
+    while (std::getline(std::cin, line)) {
+        // trim
+        std::size_t a = line.find_first_not_of(" \t;");
+        std::size_t b = line.find_last_not_of(" \t;");
+        std::string q = (a == std::string::npos) ? "" : line.substr(a, b - a + 1);
+        if (!q.empty()) {
+            std::string low = q; for (char& c : low) c = (char)std::tolower((unsigned char)c);
+            if (low == "quit" || low == "exit" || low == "\\q") break;
+            run_one_sql(t, q, threads);
+        }
+        std::printf("sql> "); std::fflush(stdout);
+    }
+    std::printf("\n");
+    return 0;
 }
 
 static Cmp parse_cmp(const std::string& s) {
@@ -155,6 +210,7 @@ int main(int argc, char** argv) {
         if (cmd == "describe") return cmd_describe(argv[2]);
         if (cmd == "head")     return cmd_head(argv[2], argc > 3 ? std::atoi(argv[3]) : 5);
         if (cmd == "query")    return cmd_query(argc, argv);
+        if (cmd == "sql")      return cmd_sql(argc, argv);
         if (cmd == "stream")   return cmd_stream(argc, argv);
     } catch (const std::exception& e) {
         std::fprintf(stderr, "error: %s\n", e.what());

@@ -39,7 +39,8 @@ add_library(strata_core STATIC
     src/table.cpp
     src/executor.cpp
     src/threadpool.cpp
-    src/memtable.cpp)
+    src/memtable.cpp
+    src/sql.cpp)
 target_include_directories(strata_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(strata_core PUBLIC strata_flags Threads::Threads)
 set_target_properties(strata_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
