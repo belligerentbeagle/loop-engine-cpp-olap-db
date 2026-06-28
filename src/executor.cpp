@@ -361,10 +361,12 @@ QueryResult Executor::agg(Agg agg, const std::string& metric_col) {
 }
 
 // ---- result helpers ---------------------------------------------------------------
-void QueryResult::sort_by_value_desc() {
+void QueryResult::sort_by_value(bool descending) {
     std::vector<std::size_t> idx(values.size());
     std::iota(idx.begin(), idx.end(), 0);
-    std::sort(idx.begin(), idx.end(), [&](std::size_t a, std::size_t b) { return values[a] > values[b]; });
+    std::sort(idx.begin(), idx.end(), [&](std::size_t a, std::size_t b) {
+        return descending ? values[a] > values[b] : values[a] < values[b];
+    });
     auto reorder_d = [&](std::vector<double>& v) { std::vector<double> t(v.size()); for (std::size_t i=0;i<idx.size();++i) t[i]=v[idx[i]]; v.swap(t); };
     auto reorder_i = [&](std::vector<std::int64_t>& v) { if(v.empty())return; std::vector<std::int64_t> t(v.size()); for (std::size_t i=0;i<idx.size();++i) t[i]=v[idx[i]]; v.swap(t); };
     auto reorder_s = [&](std::vector<std::string>& v) { if(v.empty())return; std::vector<std::string> t(v.size()); for (std::size_t i=0;i<idx.size();++i) t[i]=v[idx[i]]; v.swap(t); };
