@@ -16,6 +16,7 @@
 
 #include "strata/executor.hpp"
 #include "strata/parser.hpp"
+#include "strata/sql.hpp"
 
 namespace py = pybind11;
 using namespace strata;
@@ -215,6 +216,10 @@ PYBIND11_MODULE(strata, m) {
             return d;
         })
         .def("describe", [](const PyTable& t) { return Table_describe(*t.table); })
+        .def("sql", [](const PyTable& t, const std::string& query, unsigned threads) {
+            PyResult out; out.r = run_sql(*t.table, query, threads ? threads : 1); return out;
+        }, py::arg("query"), py::arg("threads") = 1,
+           "Run a SQL string (SELECT [dim,] agg FROM t [WHERE ...] [GROUP BY ...] [ORDER BY ...] [LIMIT n]).")
         .def("filter", [](const PyTable& t, const py::kwargs& kw) { return t.seed().filter_kwargs(kw); })
         .def("where", [](const PyTable& t, const std::string& c, const std::string& op, const py::handle& v) {
             return t.seed().filter_op(c, op, v); }, py::arg("column"), py::arg("op"), py::arg("value"))

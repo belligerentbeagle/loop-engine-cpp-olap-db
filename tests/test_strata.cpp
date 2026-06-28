@@ -12,6 +12,7 @@
 #include "strata/executor.hpp"
 #include "strata/memtable.hpp"
 #include "strata/parser.hpp"
+#include "strata/sql.hpp"
 
 namespace fs = std::filesystem;
 using namespace strata;
@@ -196,6 +197,40 @@ static void test_streaming() {
     CHECK_NEAR(sum_cost, 21.0, 1e-12);
 }
 
+static void test_sql() {
+    std::printf("test_sql\n");
+    auto p = write_temp("strata_fixture_sql.tsv", kFixture);
+    Table t = Table::from_csv(p.string(), mini_schema());
+
+    CHECK_EQ((long long)run_sql(t, "SELECT COUNT(*) FROM t").values[0], 6);
+    CHECK_EQ((long long)run_sql(t, "select count(*) from t where click = 1").values[0], 4);
+    CHECK_NEAR(run_sql(t, "SELECT SUM(cost) FROM t WHERE click = 1").values[0], 14.0, 1e-12);
+    CHECK_NEAR(run_sql(t, "SELECT AVG(cost) FROM t").values[0], 3.5, 1e-12);
+    CHECK_EQ((long long)run_sql(t, "SELECT COUNT(*) FROM t WHERE campaign = 'A'").values[0], 3);
+    CHECK_EQ((long long)run_sql(t, "SELECT COUNT(*) FROM t WHERE campaign = A").values[0], 3);  // unquoted ok
+
+    // GROUP BY + ORDER BY DESC + LIMIT
+    auto g = run_sql(t, "SELECT campaign, SUM(cost) FROM t GROUP BY campaign");
+    std::map<std::string, double> got;
+    for (std::size_t i = 0; i < g.keys.size(); ++i) got[g.keys[i]] = g.values[i];
+    CHECK_NEAR(got["A"], 9.0, 1e-12);
+    CHECK_NEAR(got["B"], 7.0, 1e-12);
+    CHECK_NEAR(got["C"], 5.0, 1e-12);
+
+    auto lim = run_sql(t, "SELECT campaign, SUM(cost) FROM t GROUP BY campaign ORDER BY 2 DESC LIMIT 2");
+    CHECK_EQ(lim.keys.size(), 2u);                       // LIMIT truncates
+    CHECK(lim.values[0] >= lim.values[1]);               // ORDER BY ... DESC
+    CHECK_NEAR(lim.values[0], 9.0, 1e-12);               // A is the largest
+
+    // error handling
+    int threw = 0;
+    try { run_sql(t, "SELECT * FROM t"); } catch (const std::exception&) { ++threw; }
+    try { run_sql(t, "SELECT COUNT(*) FROM t WHERE nope = 1"); } catch (const std::exception&) { ++threw; }
+    try { run_sql(t, "SELECT SUM(cost) FROM t WHERE a=1 OR b=2"); } catch (const std::exception&) { ++threw; }
+    CHECK_EQ(threw, 3);
+    fs::remove(p);
+}
+
 int main() {
     std::printf("=== strata tests ===\n");
     test_dictionary();
@@ -203,6 +238,7 @@ int main() {
     test_executor();
     test_parallel_equiv();
     test_streaming();
+    test_sql();
     std::printf("=== %d checks, %d failures ===\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

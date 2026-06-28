@@ -56,8 +56,9 @@ struct QueryResult {
     double rows_per_sec() const { return seconds > 0 ? rows_scanned / seconds : 0; }
     double gb_per_sec()   const { return seconds > 0 ? (bytes_scanned / 1e9) / seconds : 0; }
 
-    // Sort groups by measure (or count for Count) descending — convenience for "top N".
-    void sort_by_value_desc();
+    // Sort groups by measure (or count for Count). descending=true is the "top N" order.
+    void sort_by_value(bool descending);
+    void sort_by_value_desc() { sort_by_value(true); }
     std::string to_string(std::size_t max_rows = 20) const;
 };
 
