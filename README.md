@@ -39,7 +39,7 @@ Most "database" side projects are CRUD apps over SQLite, and they teach you almo
 - **Why a tight loop over a primitive array is fast.** A `for` loop over a `std::vector<int64_t>` with no virtual calls and no pointer chasing is exactly the shape a compiler can auto-vectorize into SIMD. You write scalar code; `-O3 -march=native` turns it into 4–8 lanes per instruction. The point of the project is to *watch this happen* (via the assembly and the benchmark) rather than take it on faith.
 - **Why ingestion and query have to coexist.** Real analytics systems answer queries while new data streams in. That forces a buffer/flush design (a "MemTable") and concurrency primitives, which is where `std::jthread`, `std::stop_token`, and lock-free queues earn their place.
 
-The deliverable is not a toy. By the end you have an artifact that demonstrates you understand CPU caching, memory alignment, data-oriented design, and the cost model of real query engines — the things a CRUD app can't show.
+The deliverable is probably a toy.
 
 ---
 
@@ -261,51 +261,6 @@ by_day = t.group_by("timestamp", 86400).count()        # one bucket per day
 
 ---
 
-## Sample data — advertising analytics
-
-You asked for real ad data large enough to stress the engine. Below are three options at increasing scale. All three are anonymized real-world advertising logs from **Criteo** / **Avazu**. Pick based on how hard you want to push the system.
-
-> **Licensing note:** the Criteo datasets are released under **CC BY-NC-SA 4.0** (non-commercial). Fine for a portfolio/learning project; just don't build a commercial product on them, and attribute Criteo.
-
-### Tier 1 — Criteo Attribution Modeling for Bidding *(recommended starting point)*
-
-The best **semantic** fit for an analytics dashboard, because — unlike the hashed datasets below — its columns have **readable meaning**.
-
-- **Scale:** ~16.5M rows, a 30-day sample of live Criteo traffic; one row per impression. Compresses to a single manageable file (hundreds of MB).
-- **Schema (tab-separated), the useful columns:** `conversion` (1 if a conversion occurred in the 30 days after the impression), `conversion_timestamp`, `conversion_id` (so timelines can be reconstructed), `attribution` (1 if the conversion was attributed to Criteo), `click` (1 if clicked), `click_pos`, `click_nb`, `cost` (price paid for the display), `cpo` (cost-per-order). Plus a per-impression `timestamp`, a `campaign` id, and `cat[1-9]`, contextual categorical features whose meaning is not disclosed.
-- **Why it fits Strata:** you get a real **timestamp** (time-bucketed aggregation), a real **campaign** dimension (`GROUP BY`), numeric **cost/cpo** (`SUM`/`AVG`), and binary **click/conversion** flags (filters + CTR/CVR ratios). That's a complete analytics surface with meaningful column names — ideal for a dashboard demo.
-- **Get it:**
-  - Source page: https://ailab.criteo.com/criteo-attribution-modeling-bidding-dataset/
-  - Kaggle mirror: https://www.kaggle.com/datasets/sharatsachin/criteo-attribution-modeling
-
-### Tier 2 — Avazu Click-Through Rate Prediction *(middle weight)*
-
-A 2014 Kaggle competition dataset of mobile ad impressions. Bigger than Tier 1, partially readable columns.
-
-- **Scale:** over 40 million records of ad impressions, each with 24 features; the training set is ~6.7GB, spanning 11 days. Because there are ~10 days of training data, a clean approach is to use a single day as a representative working sample rather than a random sub-sample.
-- **Schema:** a `click` label plus `hour`, `banner_pos`, `site_*`/`app_*` ids, `device_type`, `device_conn_type`, and anonymized `C1`–`C21` categoricals. The `hour` field doubles as a coarse timestamp (format `YYMMDDHH`).
-- **Why it fits Strata:** big enough that naive row-by-row processing hurts, so the columnar win is visible; high-cardinality categoricals make dictionary encoding worthwhile.
-- **Get it:** https://www.kaggle.com/c/avazu-ctr-prediction/data
-
-### Tier 3 — Criteo 1TB Click Logs *(the stress test — go here when you want to hurt your laptop)*
-
-The canonical large-scale ad dataset. Use this once the engine works, to benchmark out-of-core / chunked ingestion.
-
-- **Scale:** ~1.3 TB uncompressed, over four billion samples spanning 24 days. Each record has 40 columns: a click label, 13 integer features (I1–I13), and 26 categorical features (C1–C26), hashed onto 32 bits, tab-separated. Criteo provides one ~15GB compressed `.gz` file per day, so you can grab a single day and still have tens of millions of rows.
-- **Caveat:** columns are fully anonymized/hashed — great for raw scan/aggregation **throughput** benchmarks, weak for a *meaningful* dashboard. Use it to prove the engine scales, not to tell an analytics story.
-- **Get it:**
-  - Source + terms: https://ailab.criteo.com/download-criteo-1tb-click-logs-dataset/
-  - HuggingFace mirror: https://huggingface.co/datasets/criteo/CriteoClickLogs
-  - Smaller 7-day Kaggle variant (Display Advertising Challenge): https://www.kaggle.com/c/criteo-display-ad-challenge
-
-### Suggested progression
-
-Start on **Tier 1** so your dashboard has meaningful dimensions and you can sanity-check correctness against pandas/DuckDB. Move to **Tier 2** to feel the columnar/SIMD payoff. Reach for a single day of **Tier 3** only when you're benchmarking ingestion and want a number with a "millions of rows/sec" in it.
-
-If you want a deterministic, license-free option for unit tests, generate synthetic events (`timestamp, user_id, campaign_id, event_type, cost`) with a small Python script — handy for asserting exact aggregation results that real anonymized data can't give you.
-
----
-
 ## Benchmarking methodology
 
 The project is only as impressive as the numbers you can defend. Measure, don't assert:
@@ -342,7 +297,7 @@ State your hardware (CPU model, core count, RAM, that it's the ThinkPad X1 Carbo
 
 ## License
 
-Code: your choice (MIT is a sensible default for a portfolio project).
+Code: **MIT**
 Data: the Criteo datasets above are **CC BY-NC-SA 4.0** — non-commercial, attribute Criteo, share-alike.
 
 ## References
